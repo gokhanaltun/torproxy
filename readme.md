@@ -10,7 +10,7 @@ This script automates the management of a Tor proxy service on a Linux-based sys
 To make the file executable:  
 
 ```bash
-chmod +x torproxy.sh
+chmod +x ./torproxy.sh
 ``` 
 
 To use the script, run it with root privileges:
