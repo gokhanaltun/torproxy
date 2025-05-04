@@ -1,7 +1,6 @@
 #!/bin/bash
 
 TOR_PROXYRC="/etc/tor/torproxyrc"
-TOR_PROXYRC_HASH="96119f314be151b839c8ad8418fd38a22ab60c79ce7a472ed73d3ad9f0f4c25e"
 TOR_PROXYRC_DATA=(
     "VirtualAddrNetwork 10.0.0.0/10"
     "AutomapHostsOnResolve 1"
@@ -9,203 +8,207 @@ TOR_PROXYRC_DATA=(
     "DNSPort 5353"
     "ControlPort 9051"
     "RunAsDaemon 1"
+    "DataDirectory /var/lib/tor"
 )
 RESOLV_CONF="/etc/resolv.conf"
 RESOLV_CONF_BAK="/etc/resolv.conf.bak"
-RESOLV_CONF_CONTENT="nameserver 127.0.0.1"
+RESOLV_CONF_CONTENT=(
+    "nameserver 127.0.0.1"
+)
+TOR_USER="debian-tor"
+TOR_RUNNING=false
 
-active=0
+log() {
+    echo -e "[INFO] $1"
+}
+
+warn() {
+    echo -e "[WARN] $1"
+}
+
+error() {
+    echo -e "[ERROR] $1"
+}
 
 check_root() {
     if [ "$(id -u)" != "0" ]; then
-        echo "This script must be run as root" 1>&2
+        error "This script must be run as root"
         exit 1
     fi
 }
 
 get_ip() {
-    echo "Getting current ip..."
+    log "Trying to get external IP through Tor..."
     sleep 5
-    EXTERNAL_IP=$(curl --silent "https://api.ipify.org")
-    echo "Current ip: $EXTERNAL_IP"
 
+    EXTERNAL_IP=$(curl --silent https://api.ipify.org)
     if [[ -z "$EXTERNAL_IP" ]]; then
-        echo "Failed to get current ip."
+        error "Failed to get current IP."
+    else
+        log "Current IP: $EXTERNAL_IP"
     fi
+}
+
+check_tor_ports() {
+    netstat -tulnp | grep -qE '9040|9051|5353'
+    if [[ $? -ne 0 ]]; then
+        error "Tor is not listening on required ports (9040, 9051, 5353)."
+        exit 1
+    else
+        log "Tor ports are active."
+    fi
+}
+
+wait_for_tor_ports() {
+    log "Waiting for Tor ports to be open..."
+    for i in {1..10}; do
+        netstat -tuln | grep -qE '9040|9051|5353' && return
+        sleep 1
+    done
+    error "Tor ports not opened in time."
+    exit 1
 }
 
 set_torproxyrc() {
-    echo "Checking rc file: $TOR_PROXYRC"
-    
-    valid=1
-    
-    if [[ -f "$TOR_PROXYRC" ]]; then
-        echo "Checking rc file hash..."
-        
-        FILE_HASH=$(sha256sum $TOR_PROXYRC | awk '{print $1}')
-        
-        if [[ "$FILE_HASH" != "$TOR_PROXYRC_HASH" ]]; then
-            valid=0
-        fi
-    else
-        valid=0
-    fi
-
-    if [[ $valid -eq 0 ]]; then
-        echo "Rewriting the RC file..." 
-        printf "%s\n" "${TOR_PROXYRC_DATA[@]}" > "$TOR_PROXYRC"
-    fi
+    log "Setting torproxyrc..."
+    printf "%s\n" "${TOR_PROXYRC_DATA[@]}" > "$TOR_PROXYRC"
+    chown "$TOR_USER:$TOR_USER" "$TOR_PROXYRC"
 }
 
 set_resolv_conf() {
-    if [[ -f "$RESOLV_CONF" ]]; then
-        mv $RESOLV_CONF $RESOLV_CONF_BAK
-        echo "Backup of resolv.conf created."
+    if [[ -f "$RESOLV_CONF" && ! -f "$RESOLV_CONF_BAK" ]]; then
+        cp "$RESOLV_CONF" "$RESOLV_CONF_BAK"
+        log "resolv.conf backup created."
     fi
-    
-    echo "$RESOLV_CONF_CONTENT" > "$RESOLV_CONF"
-    echo "resolv.conf has been updated."
+    printf "%s\n" "${RESOLV_CONF_CONTENT[@]}" > "$RESOLV_CONF"
+    log "resolv.conf updated for local DNS."
 }
 
 reset_resolv_conf() {
     if [[ -f "$RESOLV_CONF_BAK" ]]; then
-        mv $RESOLV_CONF_BAK $RESOLV_CONF
-        echo "resolv.conf has been restored from backup."
+        mv "$RESOLV_CONF_BAK" "$RESOLV_CONF"
+        log "resolv.conf restored."
     else
-        echo "Backup file not found. Cannot restore $RESOLV_CONF."
+        warn "Backup resolv.conf not found!"
     fi
 }
 
 set_iptables_rules() {
+    log "Applying iptables rules..."
+
     NON_TOR="192.168.1.0/24 192.168.0.0/24"
-    TOR_UID=$(id -ur debian-tor)
+    TOR_UID=$(id -u $TOR_USER)
     TRANS_PORT="9040"
+    DNS_PORT="5353"
 
     iptables -F
     iptables -t nat -F
+    iptables -t filter -F
 
     iptables -t nat -A OUTPUT -m owner --uid-owner $TOR_UID -j RETURN
-    iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports 5353
-    for NET in $NON_TOR 127.0.0.0/9 127.128.0.0/10; do
-    iptables -t nat -A OUTPUT -d $NET -j RETURN
-    done
-    iptables -t nat -A OUTPUT -p tcp --syn -j REDIRECT --to-ports $TRANS_PORT
 
-    iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    iptables -t nat -A OUTPUT -p udp --dport 53 -j REDIRECT --to-ports $DNS_PORT
+
     for NET in $NON_TOR 127.0.0.0/8; do
-    iptables -A OUTPUT -d $NET -j ACCEPT
+        iptables -t nat -A OUTPUT -d $NET -j RETURN
     done
+
+    iptables -t nat -A OUTPUT -p tcp -j REDIRECT --to-ports $TRANS_PORT
+
+    for NET in $NON_TOR 127.0.0.0/8; do
+        iptables -A OUTPUT -d $NET -j ACCEPT
+    done
+
     iptables -A OUTPUT -m owner --uid-owner $TOR_UID -j ACCEPT
-    iptables -A OUTPUT -j REJECT
+   
+    iptables -A OUTPUT -j DROP
+   
+    ip6tables -F
+    ip6tables -X
+    ip6tables -P INPUT DROP
+    ip6tables -P FORWARD DROP
+    ip6tables -P OUTPUT DROP
+
+
+    log "iptables rules set."
 }
 
 reset_iptables_rules() {
+    log "Resetting iptables rules..."
     iptables -P INPUT ACCEPT
     iptables -P FORWARD ACCEPT
     iptables -P OUTPUT ACCEPT
     iptables -t nat -F
-    iptables -t mangle -F
     iptables -F
     iptables -X
+
+    ip6tables -P INPUT ACCEPT
+    ip6tables -P FORWARD ACCEPT
+    ip6tables -P OUTPUT ACCEPT
+    ip6tables -F
+    ip6tables -X
 }
 
 start() {
-    set_torproxyrc
-    set_resolv_conf
-    
-    echo "Starting tor..."
-    systemctl start tor
+    if [ "$TOR_RUNNING" = true ]; then
+        log "Tor is already running."
+    else
+        set_torproxyrc
+        set_resolv_conf
 
-    echo "Clearing control port..."
-    fuser -k 9051/tcp > /dev/null 2>&1
+        log "Killing any existing Tor process on port 9051..."
+        fuser -k 9051/tcp > /dev/null 2>&1
 
-    echo "Starting new tor daemon..."
-    sudo -u debian-tor tor -f /etc/tor/torproxyrc > /dev/null
+        log "Starting Tor manually..."
+        su -s /bin/bash -c "tor -f $TOR_PROXYRC" "$TOR_USER" > /dev/null 2>&1 &
+        wait_for_tor_ports
+        check_tor_ports
+        set_iptables_rules
 
-    echo "Setting up iptables rules..."
-    set_iptables_rules
-    
-    get_ip
-
-    active=1
+        TOR_RUNNING=true
+        get_ip
+    fi
 }
 
 stop() {
-    if [ "$active" -eq 1 ]; then
-        echo "Resetting iptables rules..."
+    if [ "$TOR_RUNNING" = true ]; then
+        log "Stopping Tor setup..."
         reset_iptables_rules
-        
-        echo "Clearing control port..."
+
         fuser -k 9051/tcp > /dev/null 2>&1
-
-        echo "Stopping tor daemon..."
-        pkill -f "tor -f /etc/tor/torproxyrc"
-
-        echo "Stopping tor..."
+        pkill -f "tor -f $TOR_PROXYRC"
         systemctl stop tor
 
-        echo "Restoring resolv.conf..."
         reset_resolv_conf
-
+        TOR_RUNNING=false
         get_ip
-
-        active=0
+    else
+        log "Tor is not running, nothing to stop."
     fi
 }
 
 switch() {
-    echo "Requesting new identity..."
-    echo -e "AUTHENTICATE \"\" \nSIGNAL NEWNYM"  | nc -w 2 127.0.0.1 9051 > /dev/null 2>&1
-    
+    log "Requesting new identity from Tor..."
+    echo -e 'AUTHENTICATE ""\nSIGNAL NEWNYM\nQUIT' | nc 127.0.0.1 9051 > /dev/null 2>&1
+    sleep 3
     get_ip
 }
 
-sigint_handler() {
-    echo -e "\n"
-    stop
-    exit 0
-}
-
-trap sigint_handler SIGINT
-
 main() {
     check_root
-    while true; do
-        echo -n "s for start, x for stop, c for switch, i for ip, q for quit: "
-        read command
+    trap stop SIGINT
 
-        case "$command" in
-            s)
-                if [ "$active" -eq 0 ]; then
-                    start
-                else
-                    echo "Already running"
-                fi
-                ;;
-            x)
-                if [ "$active" -eq 1 ]; then
-                    stop
-                else
-                    echo "Not running"
-                fi
-                ;;
-            c)
-                if [ "$active" -eq 1 ]; then
-                    switch
-                else
-                    echo "Not running"
-                fi
-                ;;
-            i)
-                get_ip
-                ;;
-            q)
-                stop
-                exit 0
-                ;;
-            *)
-                echo "Invalid option, try again."
-                ;;
+    while true; do
+        echo -n "s (start), x (stop), c (switch identity), i (get IP), q (quit): "
+        read -r cmd
+
+        case "$cmd" in
+            s) start ;;
+            x) stop ;;
+            c) switch ;;
+            i) get_ip ;;
+            q) stop; exit 0 ;;
+            *) echo "Invalid command" ;;
         esac
     done
 }

@@ -1,20 +1,19 @@
 # torproxy
-This script automates the management of a Tor proxy service on a Linux-based system. Redirects all network communication to the Tor network.
+A Bash script to redirect all outgoing internet traffic through the Tor network on Linux-based systems. It automates configuring Tor, DNS, and iptables rules to ensure your traffic stays anonymous.
 
-## Prerequisites:
-- The script requires **sudo** (root privileges) to run properly.
-- Ensure **curl**, **iptables**, **netcat** and **tor** are installed and properly configured.
-- The script assumes that Tor is installed and available as a system service (systemctl).
+## Prerequisites
+- The script **must** be run with root privileges (use `sudo`).
+- Required packages: `curl`, `iptables`, `netcat (nc)`, and `tor`.
+- Make sure Tor is installed and manageable via `systemctl` (system service).
 
-## Usage:
-To make the file executable:  
+## Usage
 
+Make the script executable:
 ```bash
-chmod +x ./torproxy.sh
-``` 
+sudo chmod +x torproxy.sh
+```
 
-To use the script, run it with root privileges:
-
+Then run it with root privileges:
 ```bash
 sudo ./torproxy.sh
 ```
@@ -28,9 +27,9 @@ sudo ./torproxy.sh
 - **q**: Quit the script and stop Tor.
 
 
-## Important Note:  
-The script uses the `debian-tor` user, which is the default user for managing Tor processes on Debian-based systems. However, this user may not be available on all Linux distributions.  
+## Important Notes:
 
-- If you are using Arch or another distribution, you might need to create a similar user or modify the script to work with root (or an existing user).  
-
-**I plan to update the script soon to remove this limitation.**
+- This script uses the `debian-tor` user, which is the default for Debian-based systems.
+- On non-Debian systems (e.g., Arch, Fedora), you may need to:
+  - Create a similar user manually, or
+  - Modify the script to use `root` or an appropriate Tor user.
