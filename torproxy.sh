@@ -62,7 +62,7 @@ check_tor_ports() {
 wait_for_tor_ports() {
     log "Waiting for Tor ports to be open..."
     for i in {1..10}; do
-        netstat -tuln | grep -qE '9040|9051|5353' && return
+        ss -tuln | grep -qE '9040|9051|5353' && return
         sleep 1
     done
     error "Tor ports not opened in time."
