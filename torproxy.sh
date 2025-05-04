@@ -50,7 +50,7 @@ get_ip() {
 }
 
 check_tor_ports() {
-    netstat -tulnp | grep -qE '9040|9051|5353'
+    ss -tulnp | grep -qE '9040|9051|5353'
     if [[ $? -ne 0 ]]; then
         error "Tor is not listening on required ports (9040, 9051, 5353)."
         exit 1
