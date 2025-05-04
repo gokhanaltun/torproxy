@@ -66,7 +66,8 @@ wait_for_tor_ports() {
         sleep 1
     done
     error "Tor ports not opened in time."
-    exit 1
+    $TOR_RUNNING = true
+    stop
 }
 
 set_torproxyrc() {
